@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 import auth
 import schemas
+import services.meetings  # noqa: F401  importing the module registers "meetings" in DEFAULT_REGISTRY (D21)
 import services.users  # noqa: F401  importing the module registers "users" in DEFAULT_REGISTRY (D21)
 from database import SessionLocal, create_tables, get_db
 from errors import Conflict, Invalid, MeshError, NotFound, NoUser, UnknownService
@@ -79,78 +80,44 @@ def get_user(user_id: int, mesh: ServiceMesh = Depends(auth.get_mesh)):
 
 
 # Meeting endpoints
-@app.post(
-    "/meetings/", response_model=schemas.Meeting, status_code=201, dependencies=[Depends(auth.get_current_user_id)]
-)
-def create_meeting(meeting: schemas.MeetingCreate):
+@app.post("/meetings/", response_model=schemas.Meeting, status_code=201)
+def create_meeting(meeting: schemas.MeetingCreate, mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     Create a new meeting with attendees.
     """
-    # Stub: Return a mock meeting
-    return schemas.Meeting(
-        id=1,
-        title=meeting.title,
-        description=meeting.description,
-        scheduled_time=meeting.scheduled_time,
-        created_at=meeting.scheduled_time,
-        attendees=[],
-    )
+    return mesh.meetings.create(data=meeting)
 
 
-@app.get("/meetings/", response_model=List[schemas.Meeting], dependencies=[Depends(auth.get_current_user_id)])
-def list_meetings():
+@app.get("/meetings/", response_model=List[schemas.Meeting])
+def list_meetings(mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     List all meetings.
     """
-    # Stub: Return empty list
-    return []
+    return mesh.meetings.list()
 
 
-@app.get(
-    "/meetings/{meeting_id}",
-    response_model=schemas.MeetingWithDetails,
-    dependencies=[Depends(auth.get_current_user_id)],
-)
-def get_meeting(meeting_id: int):
+@app.get("/meetings/{meeting_id}", response_model=schemas.MeetingWithDetails)
+def get_meeting(meeting_id: int, mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     Get a specific meeting with all details (attendees, notes, tasks).
     """
-    # Stub: Return a mock meeting with details
-    return schemas.MeetingWithDetails(
-        id=meeting_id,
-        title="Team Standup",
-        description="Daily standup meeting",
-        scheduled_time=datetime.now(timezone.utc),
-        created_at=datetime.now(timezone.utc),
-        attendees=[],
-        notes=[],
-        tasks=[],
-    )
+    return mesh.meetings.get(meeting_id=meeting_id)
 
 
-@app.put("/meetings/{meeting_id}", response_model=schemas.Meeting, dependencies=[Depends(auth.get_current_user_id)])
-def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate):
+@app.put("/meetings/{meeting_id}", response_model=schemas.Meeting)
+def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate, mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     Update a meeting.
     """
-    # Stub: Return a mock updated meeting
-    return schemas.Meeting(
-        id=meeting_id,
-        title=meeting.title or "Updated Meeting",
-        description=meeting.description,
-        scheduled_time=meeting.scheduled_time or datetime.now(timezone.utc),
-        created_at=datetime.now(timezone.utc),
-        attendees=[],
-    )
+    return mesh.meetings.update(meeting_id=meeting_id, data=meeting)
 
 
-@app.delete("/meetings/{meeting_id}", status_code=204, dependencies=[Depends(auth.get_current_user_id)])
-def delete_meeting(meeting_id: int):
+@app.delete("/meetings/{meeting_id}", status_code=204)
+def delete_meeting(meeting_id: int, mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     Delete a meeting.
     """
-    # Stub: Just return success
-    return None
+    return mesh.meetings.delete(meeting_id=meeting_id)
 
 
 # Note endpoints

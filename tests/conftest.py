@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 
 # Before main, and so auth, is imported: bcrypt's minimum work factor keeps every test hash under a millisecond.
 os.environ.setdefault("BCRYPT_ROUNDS", "4")
@@ -74,15 +75,35 @@ def client(db_engine, runtime):
     app.dependency_overrides.clear()
 
 
-@pytest.fixture
-def headers_for(client):
-    """Register and log in one user; returns the Authorization headers for them."""
+@dataclass(frozen=True)
+class Account:
+    """One registered and logged-in user: the id to list as an attendee and the headers to act as them."""
 
-    def _headers_for(email: str, name: str = "Test User", password: str = "correct horse") -> dict[str, str]:
+    id: int
+    name: str
+    email: str
+    headers: dict[str, str]
+
+
+@pytest.fixture
+def user_for(client):
+    """Register and log in one user; returns them as an Account."""
+
+    def _user_for(email: str, name: str = "Test User", password: str = "correct horse") -> Account:
         created = client.post("/users/", json={"name": name, "email": email, "password": password})
         assert created.status_code == 201, created.text
         login = client.post("/auth/login", json={"email": email, "password": password})
         assert login.status_code == 200, login.text
-        return {"Authorization": f"Bearer {login.json()['access_token']}"}
+        return Account(created.json()["id"], name, email, {"Authorization": f"Bearer {login.json()['access_token']}"})
+
+    return _user_for
+
+
+@pytest.fixture
+def headers_for(user_for):
+    """P2's helper, unchanged in signature: the headers of user_for(...)."""
+
+    def _headers_for(email: str, name: str = "Test User", password: str = "correct horse") -> dict[str, str]:
+        return user_for(email, name, password).headers
 
     return _headers_for

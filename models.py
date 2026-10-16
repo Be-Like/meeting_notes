@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text, select
 from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.sql import Select
 from sqlalchemy.types import TypeDecorator
 
 Base = declarative_base()
@@ -41,6 +42,11 @@ meeting_users = Table(
 )
 
 
+def attended_meeting_ids(user_id: int) -> Select:
+    """Meeting ids the user attends (D4). The one home of the visibility rule; every scope filters through it."""
+    return select(meeting_users.c.meeting_id).where(meeting_users.c.user_id == user_id)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -62,6 +68,7 @@ class Meeting(Base):
     description = Column(Text)
     scheduled_time = Column(UTCDateTime, nullable=False)
     created_at = Column(UTCDateTime, default=utc_now)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     # Relationships
     attendees = relationship("User", secondary=meeting_users, back_populates="meetings")
