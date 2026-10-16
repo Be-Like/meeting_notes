@@ -1,10 +1,12 @@
-"""The closed error set the mesh carries as data (D35). Nothing here knows about HTTP; P3 maps the names."""
+"""The closed error set the mesh carries as data (D35): six names, the sixth raised by the tool registry view.
+Nothing here knows about HTTP; P3 maps the names."""
 
 from pydantic import BaseModel
 
 
 class MeshError(Exception):
-    """Base of the closed error set (D35). Services raise the first three; the mesh and dispatcher the last two."""
+    """Base of the closed error set (D35), six names. Services raise the first three; the mesh and dispatcher the
+    next two; the tool registry view the sixth."""
 
     def __init__(self, message: str = ""):
         super().__init__(message)
@@ -26,13 +28,16 @@ class NoUser(MeshError): ...
 class UnknownService(MeshError): ...
 
 
+class UnknownTool(MeshError): ...  # raised by the tool registry view for a name it does not hold (P5)
+
+
 class ErrorPayload(BaseModel):
-    type: str  # one of the five class names
+    type: str  # one of the six class names
     message: str
 
 
 ERROR_TYPES: dict[str, type[MeshError]] = {
-    cls.__name__: cls for cls in (NotFound, Conflict, Invalid, NoUser, UnknownService)
+    cls.__name__: cls for cls in (NotFound, Conflict, Invalid, NoUser, UnknownService, UnknownTool)
 }
 
 

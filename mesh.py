@@ -1,5 +1,5 @@
 """The in-process service mesh: envelope, reply, transport, dispatcher, the per-request mesh (D13 to D16), and the
-per-process runtime that composes them at startup (D17)."""
+per-process runtime that composes them at startup (D17), including the tool view built once over the registry (D42)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from cache import Cache, InMemoryCache, cache_key
 from errors import ErrorPayload, MeshError, NoUser, UnknownService, from_payload, to_payload
 from services.base import DEFAULT_REGISTRY, ServiceRegistry, is_read_only
+from tools import ToolDefinition, ToolRegistry, ToolResult
 
 
 class CallEnvelope(BaseModel):
@@ -106,15 +107,19 @@ class ServiceMesh:
     """One per request, bound to one user id (D13). A mesh with no user cannot exist (D39).
 
     The parts live under underscore names so that no service name can be shadowed by an attribute of the mesh.
+    get_tools and call_tool are the MCP-shaped face of the same mesh (D25); call_tool routes through call.
     """
 
-    def __init__(self, user_id: int, registry: ServiceRegistry, transport: Transport, cache: Cache) -> None:
+    def __init__(
+        self, user_id: int, registry: ServiceRegistry, transport: Transport, cache: Cache, tools: ToolRegistry
+    ) -> None:
         if user_id is None:
             raise NoUser("the mesh needs an authenticated user id")
         self.user_id = user_id
         self._registry = registry
         self._transport = transport
         self._cache = cache
+        self._tools = tools
 
     def __getattr__(self, name: str) -> ServiceProxy:
         if name.startswith("_"):
@@ -122,6 +127,14 @@ class ServiceMesh:
         if name not in self._registry:
             raise UnknownService(f"unknown service {name!r}")
         return ServiceProxy(self, name)
+
+    def get_tools(self) -> list[ToolDefinition]:
+        """The MCP tool list (D25). The same for every user; what a tool returns is what depends on the user."""
+        return list(self._tools.definitions)
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Validate, route through call, answer as an MCP result (D25). UnknownTool raises; a MeshError is a result."""
+        return self._tools.call(name, arguments, self.call)
 
     def call(self, service: str, method: str, arguments: dict[str, Any]) -> Any:
         """The caller's side of every call (D14). The cache sits above routing (D40); errors never touch it."""
@@ -152,7 +165,7 @@ class ServiceMesh:
 
 
 class MeshRuntime:
-    """The per-process parts (D17): registry, cache, dispatcher, transport. build_mesh is the per-request step.
+    """The per-process parts (D17): registry, cache, dispatcher, transport, tools. build_mesh is the per-request step.
 
     The dispatcher's mesh factory is build_mesh itself, so a service on the far side gets a mesh over the same
     transport and cache as its caller (story 17). build_mesh reads the attributes at call time, so a test may
@@ -164,9 +177,10 @@ class MeshRuntime:
         self.cache = cache
         self.dispatcher = Dispatcher(registry, session_factory, self.build_mesh)
         self.transport: Transport = InMemoryTransport(self.dispatcher)
+        self.tools = ToolRegistry(registry)  # once per process, after every service module is imported (D42)
 
     def build_mesh(self, user_id: int) -> ServiceMesh:
-        return ServiceMesh(user_id, self.registry, self.transport, self.cache)
+        return ServiceMesh(user_id, self.registry, self.transport, self.cache, self.tools)
 
 
 TRANSPORTS = ("memory",)

@@ -11,8 +11,9 @@ import services.meetings  # noqa: F401  importing the module registers "meetings
 import services.notes  # noqa: F401  importing the module registers "notes" in DEFAULT_REGISTRY (D21)
 import services.tasks  # noqa: F401  importing the module registers "tasks" in DEFAULT_REGISTRY (D21)
 import services.users  # noqa: F401  importing the module registers "users" in DEFAULT_REGISTRY (D21)
+import tools
 from database import SessionLocal, create_tables, get_db
-from errors import Conflict, Invalid, MeshError, NotFound, NoUser, UnknownService
+from errors import Conflict, Invalid, MeshError, NotFound, NoUser, UnknownService, UnknownTool
 from mesh import MeshRuntime, ServiceMesh, build_runtime
 
 
@@ -38,7 +39,7 @@ def _mesh_error_handler(status_code: int, headers: dict[str, str] | None = None)
     return handler
 
 
-for _cls, _status in ((NotFound, 404), (Conflict, 409), (Invalid, 422), (UnknownService, 500)):
+for _cls, _status in ((NotFound, 404), (Conflict, 409), (Invalid, 422), (UnknownService, 500), (UnknownTool, 500)):
     app.add_exception_handler(_cls, _mesh_error_handler(_status))
 app.add_exception_handler(NoUser, _mesh_error_handler(401, {"WWW-Authenticate": "Bearer"}))
 
@@ -191,6 +192,15 @@ def delete_task(task_id: int, mesh: ServiceMesh = Depends(auth.get_mesh)):
     return mesh.tasks.delete(task_id=task_id)
 
 
+# Tool endpoints
+@app.get("/tools", response_model=tools.ToolList)
+def list_tools(mesh: ServiceMesh = Depends(auth.get_mesh)):
+    """
+    List the MCP tool definitions for every service method an LLM may call on the caller's behalf.
+    """
+    return tools.ToolList(tools=mesh.get_tools())
+
+
 @app.get("/")
 def root():
     """
@@ -199,5 +209,11 @@ def root():
     return {
         "message": "Welcome to the Meeting Notes API",
         "version": "1.0.0",
-        "endpoints": {"users": "/users/", "meetings": "/meetings/", "notes": "/notes/", "tasks": "/tasks/"},
+        "endpoints": {
+            "users": "/users/",
+            "meetings": "/meetings/",
+            "notes": "/notes/",
+            "tasks": "/tasks/",
+            "tools": "/tools",
+        },
     }

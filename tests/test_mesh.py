@@ -6,6 +6,7 @@ from cache import InMemoryCache, cache_key
 from errors import ERROR_TYPES, ErrorPayload, NotFound, NoUser, UnknownService, from_payload, to_payload
 from mesh import CallEnvelope, Dispatcher, InMemoryTransport, MeshRuntime, Reply, ServiceMesh, build_runtime
 from services.base import DEFAULT_REGISTRY, BaseService, ServiceRegistry, is_read_only, read_only
+from tools import ToolRegistry
 
 REGISTRY = ServiceRegistry()
 CALLS: list[tuple[str, str, dict]] = []
@@ -351,7 +352,7 @@ def test_underscore_attribute_raises_attribute_error(parts):
 
 def test_call_with_no_user_raises_no_user_before_transport(parts):
     with pytest.raises(NoUser):
-        ServiceMesh(None, REGISTRY, parts.transport, parts.cache)
+        ServiceMesh(None, REGISTRY, parts.transport, parts.cache, ToolRegistry(REGISTRY))
 
     mesh = parts.build_mesh(7)
     mesh.user_id = None

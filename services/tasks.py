@@ -6,7 +6,8 @@ from sqlalchemy.sql import Select
 import schemas
 from errors import NotFound
 from models import Task, attended_meeting_ids
-from services.base import BaseService, read_only
+from services.base import BaseService
+from tools import tool
 
 
 class TaskService(BaseService):
@@ -24,7 +25,11 @@ class TaskService(BaseService):
             raise NotFound(f"task {task_id} not found")
         return row
 
+    @tool(title="Create task", read_only=False, destructive=False, idempotent=False)
     def create(self, data: schemas.TaskCreate) -> schemas.Task:
+        """Add a task due at a meeting the caller attends; status defaults to pending. A meeting the caller does not
+        attend, or that does not exist, is "meeting <id> not found" and nothing is created. Calling twice adds a
+        second task."""
         # Called for its NotFound: a hidden and a missing meeting raise before the session is touched (D36).
         self.mesh.meetings.get(meeting_id=data.due_meeting_id)
         row = Task(
@@ -39,8 +44,10 @@ class TaskService(BaseService):
         self.session.refresh(row)
         return schemas.Task.model_validate(row)
 
-    @read_only
-    def list(self, meeting_id: int | None = None, status: schemas.TaskStatus | str | None = None) -> list[schemas.Task]:
+    @tool(title="List tasks", read_only=True, destructive=False, idempotent=True)
+    def list(self, meeting_id: int | None = None, status: schemas.TaskStatus | None = None) -> list[schemas.Task]:
+        """List the tasks on meetings the caller attends, ordered by id, optionally narrowed to one meeting and one
+        status. A meeting the caller does not attend yields an empty list."""
         stmt = self.scope(select(Task)).order_by(Task.id)
         if meeting_id is not None:
             stmt = stmt.where(Task.due_meeting_id == meeting_id)
@@ -49,11 +56,17 @@ class TaskService(BaseService):
             stmt = stmt.where(Task.status == schemas.TaskStatus(status).value)
         return [schemas.Task.model_validate(row) for row in self.session.scalars(stmt)]
 
-    @read_only
+    @tool(title="Get task", read_only=True, destructive=False, idempotent=True)
     def get(self, task_id: int) -> schemas.Task:
+        """Return one task due at a meeting the caller attends. A task on a meeting the caller does not attend, or
+        that does not exist, is "task <id> not found"."""
         return schemas.Task.model_validate(self._visible(task_id))
 
+    @tool(title="Update task", read_only=False, destructive=True, idempotent=True)
     def update(self, task_id: int, data: schemas.TaskUpdate) -> schemas.Task:
+        """Change the fields sent on a task due at a meeting the caller attends; description sent as null clears it.
+        A task the caller cannot see, or that does not exist, is "task <id> not found"; moving it to a meeting the
+        caller does not attend, or that does not exist, is "meeting <id> not found" and nothing changes."""
         # The scoped read precedes the mesh call because a read leaves nothing to roll back.
         row = self._visible(task_id)
         changes = data.model_dump(exclude_unset=True)
@@ -73,6 +86,9 @@ class TaskService(BaseService):
         self.session.refresh(row)
         return schemas.Task.model_validate(row)
 
+    @tool(title="Delete task", read_only=False, destructive=True, idempotent=True)
     def delete(self, task_id: int) -> None:
+        """Delete a task due at a meeting the caller attends. A task the caller cannot see, or that does not exist,
+        is "task <id> not found"."""
         self.session.delete(self._visible(task_id))
         return None

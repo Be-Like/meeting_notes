@@ -7,7 +7,8 @@ from sqlalchemy.sql import Select
 import schemas
 from errors import NotFound
 from models import Meeting, User, attended_meeting_ids
-from services.base import BaseService, read_only
+from services.base import BaseService
+from tools import tool
 
 
 class MeetingService(BaseService):
@@ -39,7 +40,11 @@ class MeetingService(BaseService):
             meeting.tasks.sort(key=lambda task: task.id)
         return meeting
 
+    @tool(title="Create meeting", read_only=False, destructive=False, idempotent=False)
     def create(self, data: schemas.MeetingCreate) -> schemas.Meeting:
+        """Create a meeting the caller owns and attends, with the given attendees. Every attendee id must name an
+        existing user, or the answer is "user <id> not found" and nothing is created. Calling twice creates two
+        meetings."""
         rows = self._attendee_rows(data.attendee_ids)
         row = Meeting(
             title=data.title,
@@ -54,8 +59,9 @@ class MeetingService(BaseService):
         self.session.refresh(row)
         return self._to_schema(row)
 
-    @read_only
+    @tool(title="List meetings", read_only=True, destructive=False, idempotent=True)
     def list(self) -> list[schemas.Meeting]:
+        """List the meetings the caller attends, with their attendees, ordered by scheduled time and then id."""
         stmt = (
             self.scope(select(Meeting))
             .options(selectinload(Meeting.attendees))
@@ -63,8 +69,10 @@ class MeetingService(BaseService):
         )
         return [self._to_schema(row) for row in self.session.scalars(stmt)]
 
-    @read_only
+    @tool(title="Get meeting", read_only=True, destructive=False, idempotent=True)
     def get(self, meeting_id: int) -> schemas.MeetingWithDetails:
+        """Return one meeting the caller attends, with its attendees, notes, and tasks. A meeting the caller does
+        not attend, or that does not exist, is "meeting <id> not found"."""
         stmt = (
             self.scope(select(Meeting))
             .where(Meeting.id == meeting_id)
@@ -75,7 +83,11 @@ class MeetingService(BaseService):
             raise NotFound(f"meeting {meeting_id} not found")
         return self._to_schema(row, details=True)
 
+    @tool(title="Update meeting", read_only=False, destructive=True, idempotent=True)
     def update(self, meeting_id: int, data: schemas.MeetingUpdate) -> schemas.Meeting:
+        """Change the fields sent on a meeting the caller created. Sending attendee_ids replaces the attendee list
+        and can remove attendees. A meeting the caller did not create, or that does not exist, is "meeting <id>
+        not found"."""
         row = self.session.scalars(self._owned(meeting_id)).first()
         if row is None:
             raise NotFound(f"meeting {meeting_id} not found")
@@ -90,7 +102,10 @@ class MeetingService(BaseService):
         self.session.refresh(row)
         return self._to_schema(row)
 
+    @tool(title="Delete meeting", read_only=False, destructive=True, idempotent=True)
     def delete(self, meeting_id: int) -> None:
+        """Delete a meeting the caller created, with its notes and tasks. A meeting the caller did not create, or
+        that does not exist, is "meeting <id> not found"."""
         row = self.session.scalars(self._owned(meeting_id)).first()
         if row is None:
             raise NotFound(f"meeting {meeting_id} not found")
