@@ -1,4 +1,5 @@
 import pytest
+from conftest import RecordingTransport
 from pydantic import BaseModel
 
 from cache import InMemoryCache, cache_key
@@ -102,18 +103,6 @@ class Clock:
 
     def __call__(self) -> float:
         return self.now
-
-
-class RecordingTransport:
-    """Wraps an InMemoryTransport and keeps every envelope it sees, so a test can tell a cache hit from a send."""
-
-    def __init__(self, inner: InMemoryTransport) -> None:
-        self.inner = inner
-        self.envelopes: list[CallEnvelope] = []
-
-    def send(self, envelope: CallEnvelope) -> Reply:
-        self.envelopes.append(envelope)
-        return self.inner.send(envelope)
 
 
 class MeshParts:

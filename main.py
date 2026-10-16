@@ -2,15 +2,22 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
+import auth
 import schemas
-from database import create_tables
+import services.users  # noqa: F401  importing the module registers "users" in DEFAULT_REGISTRY (D21)
+from database import SessionLocal, create_tables, get_db
+from errors import Conflict, Invalid, MeshError, NotFound, NoUser, UnknownService
+from mesh import MeshRuntime, ServiceMesh, build_runtime
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_tables()
+    app.state.mesh_runtime = build_runtime(session_factory=SessionLocal)
     yield
 
 
@@ -22,36 +29,59 @@ app = FastAPI(
 )
 
 
+def _mesh_error_handler(status_code: int, headers: dict[str, str] | None = None):
+    def handler(request: Request, exc: MeshError) -> JSONResponse:
+        return JSONResponse({"detail": exc.message}, status_code=status_code, headers=headers)
+
+    return handler
+
+
+for _cls, _status in ((NotFound, 404), (Conflict, 409), (Invalid, 422), (UnknownService, 500)):
+    app.add_exception_handler(_cls, _mesh_error_handler(_status))
+app.add_exception_handler(NoUser, _mesh_error_handler(401, {"WWW-Authenticate": "Bearer"}))
+
+
 # User endpoints
 @app.post("/users/", response_model=schemas.User, status_code=201)
-def create_user(user: schemas.UserCreate):
+def create_user(
+    user: schemas.UserCreate, db: Session = Depends(get_db), runtime: MeshRuntime = Depends(auth.get_runtime)
+):
     """
     Create a new user.
     """
-    # Stub: Return a mock user
-    return schemas.User(id=1, name=user.name, email=user.email)
+    created = auth.register(db, user)
+    runtime.cache.clear("users")
+    return created
+
+
+@app.post("/auth/login", response_model=schemas.Token)
+def login(body: schemas.LoginRequest, db: Session = Depends(get_db)):
+    """
+    Log in with email and password; returns a bearer token and revokes any earlier one.
+    """
+    return schemas.Token(access_token=auth.login(db, body.email, body.password))
 
 
 @app.get("/users/", response_model=List[schemas.User])
-def list_users():
+def list_users(mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     List all users.
     """
-    # Stub: Return empty list
-    return []
+    return mesh.users.list()
 
 
 @app.get("/users/{user_id}", response_model=schemas.User)
-def get_user(user_id: int):
+def get_user(user_id: int, mesh: ServiceMesh = Depends(auth.get_mesh)):
     """
     Get a specific user by ID.
     """
-    # Stub: Return a mock user
-    return schemas.User(id=user_id, name="John Doe", email="john@example.com")
+    return mesh.users.get(user_id=user_id)
 
 
 # Meeting endpoints
-@app.post("/meetings/", response_model=schemas.Meeting, status_code=201)
+@app.post(
+    "/meetings/", response_model=schemas.Meeting, status_code=201, dependencies=[Depends(auth.get_current_user_id)]
+)
 def create_meeting(meeting: schemas.MeetingCreate):
     """
     Create a new meeting with attendees.
@@ -67,7 +97,7 @@ def create_meeting(meeting: schemas.MeetingCreate):
     )
 
 
-@app.get("/meetings/", response_model=List[schemas.Meeting])
+@app.get("/meetings/", response_model=List[schemas.Meeting], dependencies=[Depends(auth.get_current_user_id)])
 def list_meetings():
     """
     List all meetings.
@@ -76,7 +106,11 @@ def list_meetings():
     return []
 
 
-@app.get("/meetings/{meeting_id}", response_model=schemas.MeetingWithDetails)
+@app.get(
+    "/meetings/{meeting_id}",
+    response_model=schemas.MeetingWithDetails,
+    dependencies=[Depends(auth.get_current_user_id)],
+)
 def get_meeting(meeting_id: int):
     """
     Get a specific meeting with all details (attendees, notes, tasks).
@@ -94,7 +128,7 @@ def get_meeting(meeting_id: int):
     )
 
 
-@app.put("/meetings/{meeting_id}", response_model=schemas.Meeting)
+@app.put("/meetings/{meeting_id}", response_model=schemas.Meeting, dependencies=[Depends(auth.get_current_user_id)])
 def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate):
     """
     Update a meeting.
@@ -110,7 +144,7 @@ def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate):
     )
 
 
-@app.delete("/meetings/{meeting_id}", status_code=204)
+@app.delete("/meetings/{meeting_id}", status_code=204, dependencies=[Depends(auth.get_current_user_id)])
 def delete_meeting(meeting_id: int):
     """
     Delete a meeting.
@@ -120,7 +154,7 @@ def delete_meeting(meeting_id: int):
 
 
 # Note endpoints
-@app.post("/notes/", response_model=schemas.Note, status_code=201)
+@app.post("/notes/", response_model=schemas.Note, status_code=201, dependencies=[Depends(auth.get_current_user_id)])
 def create_note(note: schemas.NoteCreate):
     """
     Create a new note for a meeting.
@@ -129,7 +163,7 @@ def create_note(note: schemas.NoteCreate):
     return schemas.Note(id=1, content=note.content, meeting_id=note.meeting_id, created_at=datetime.now(timezone.utc))
 
 
-@app.get("/notes/", response_model=List[schemas.Note])
+@app.get("/notes/", response_model=List[schemas.Note], dependencies=[Depends(auth.get_current_user_id)])
 def list_notes(meeting_id: Optional[int] = Query(None)):
     """
     List all notes, optionally filtered by meeting_id.
@@ -138,7 +172,7 @@ def list_notes(meeting_id: Optional[int] = Query(None)):
     return []
 
 
-@app.get("/notes/{note_id}", response_model=schemas.Note)
+@app.get("/notes/{note_id}", response_model=schemas.Note, dependencies=[Depends(auth.get_current_user_id)])
 def get_note(note_id: int):
     """
     Get a specific note by ID.
@@ -148,7 +182,7 @@ def get_note(note_id: int):
 
 
 # Task endpoints
-@app.post("/tasks/", response_model=schemas.Task, status_code=201)
+@app.post("/tasks/", response_model=schemas.Task, status_code=201, dependencies=[Depends(auth.get_current_user_id)])
 def create_task(task: schemas.TaskCreate):
     """
     Create a new task that is due at a specific meeting.
@@ -164,7 +198,7 @@ def create_task(task: schemas.TaskCreate):
     )
 
 
-@app.get("/tasks/", response_model=List[schemas.Task])
+@app.get("/tasks/", response_model=List[schemas.Task], dependencies=[Depends(auth.get_current_user_id)])
 def list_tasks(meeting_id: Optional[int] = Query(None), status: Optional[schemas.TaskStatus] = Query(None)):
     """
     List all tasks, optionally filtered by meeting_id or status.
@@ -173,7 +207,7 @@ def list_tasks(meeting_id: Optional[int] = Query(None), status: Optional[schemas
     return []
 
 
-@app.get("/tasks/{task_id}", response_model=schemas.Task)
+@app.get("/tasks/{task_id}", response_model=schemas.Task, dependencies=[Depends(auth.get_current_user_id)])
 def get_task(task_id: int):
     """
     Get a specific task by ID.
@@ -189,7 +223,7 @@ def get_task(task_id: int):
     )
 
 
-@app.put("/tasks/{task_id}", response_model=schemas.Task)
+@app.put("/tasks/{task_id}", response_model=schemas.Task, dependencies=[Depends(auth.get_current_user_id)])
 def update_task(task_id: int, task: schemas.TaskUpdate):
     """
     Update a task (e.g., change status, reassign to different meeting).
@@ -205,7 +239,7 @@ def update_task(task_id: int, task: schemas.TaskUpdate):
     )
 
 
-@app.delete("/tasks/{task_id}", status_code=204)
+@app.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(auth.get_current_user_id)])
 def delete_task(task_id: int):
     """
     Delete a task.

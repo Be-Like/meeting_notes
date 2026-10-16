@@ -8,7 +8,7 @@ line-length = 120
 select = ["E", "F", "I", "B"]
 
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.Query"]
+extend-immutable-calls = ["fastapi.Query", "fastapi.Depends"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
