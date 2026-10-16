@@ -1,0 +1,21 @@
+[project]
+requires-python = ">=3.12,<3.13"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Query"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    "error::DeprecationWarning",
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+    "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
+]

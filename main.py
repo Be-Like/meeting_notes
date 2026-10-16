@@ -1,18 +1,30 @@
-from fastapi import FastAPI, HTTPException, Query
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import List, Optional
-from datetime import datetime
+
+from fastapi import FastAPI, Query
+
 import schemas
+from database import create_tables
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_tables()
+    yield
+
 
 app = FastAPI(
     title="Meeting Notes API",
     description="API for managing meetings, notes, and tasks",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 
 # User endpoints
 @app.post("/users/", response_model=schemas.User, status_code=201)
-async def create_user(user: schemas.UserCreate):
+def create_user(user: schemas.UserCreate):
     """
     Create a new user.
     """
@@ -21,7 +33,7 @@ async def create_user(user: schemas.UserCreate):
 
 
 @app.get("/users/", response_model=List[schemas.User])
-async def list_users():
+def list_users():
     """
     List all users.
     """
@@ -30,7 +42,7 @@ async def list_users():
 
 
 @app.get("/users/{user_id}", response_model=schemas.User)
-async def get_user(user_id: int):
+def get_user(user_id: int):
     """
     Get a specific user by ID.
     """
@@ -40,7 +52,7 @@ async def get_user(user_id: int):
 
 # Meeting endpoints
 @app.post("/meetings/", response_model=schemas.Meeting, status_code=201)
-async def create_meeting(meeting: schemas.MeetingCreate):
+def create_meeting(meeting: schemas.MeetingCreate):
     """
     Create a new meeting with attendees.
     """
@@ -51,12 +63,12 @@ async def create_meeting(meeting: schemas.MeetingCreate):
         description=meeting.description,
         scheduled_time=meeting.scheduled_time,
         created_at=meeting.scheduled_time,
-        attendees=[]
+        attendees=[],
     )
 
 
 @app.get("/meetings/", response_model=List[schemas.Meeting])
-async def list_meetings():
+def list_meetings():
     """
     List all meetings.
     """
@@ -65,7 +77,7 @@ async def list_meetings():
 
 
 @app.get("/meetings/{meeting_id}", response_model=schemas.MeetingWithDetails)
-async def get_meeting(meeting_id: int):
+def get_meeting(meeting_id: int):
     """
     Get a specific meeting with all details (attendees, notes, tasks).
     """
@@ -74,16 +86,16 @@ async def get_meeting(meeting_id: int):
         id=meeting_id,
         title="Team Standup",
         description="Daily standup meeting",
-        scheduled_time=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+        scheduled_time=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
         attendees=[],
         notes=[],
-        tasks=[]
+        tasks=[],
     )
 
 
 @app.put("/meetings/{meeting_id}", response_model=schemas.Meeting)
-async def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate):
+def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate):
     """
     Update a meeting.
     """
@@ -92,14 +104,14 @@ async def update_meeting(meeting_id: int, meeting: schemas.MeetingUpdate):
         id=meeting_id,
         title=meeting.title or "Updated Meeting",
         description=meeting.description,
-        scheduled_time=meeting.scheduled_time or datetime.utcnow(),
-        created_at=datetime.utcnow(),
-        attendees=[]
+        scheduled_time=meeting.scheduled_time or datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+        attendees=[],
     )
 
 
 @app.delete("/meetings/{meeting_id}", status_code=204)
-async def delete_meeting(meeting_id: int):
+def delete_meeting(meeting_id: int):
     """
     Delete a meeting.
     """
@@ -109,21 +121,16 @@ async def delete_meeting(meeting_id: int):
 
 # Note endpoints
 @app.post("/notes/", response_model=schemas.Note, status_code=201)
-async def create_note(note: schemas.NoteCreate):
+def create_note(note: schemas.NoteCreate):
     """
     Create a new note for a meeting.
     """
     # Stub: Return a mock note
-    return schemas.Note(
-        id=1,
-        content=note.content,
-        meeting_id=note.meeting_id,
-        created_at=datetime.utcnow()
-    )
+    return schemas.Note(id=1, content=note.content, meeting_id=note.meeting_id, created_at=datetime.now(timezone.utc))
 
 
 @app.get("/notes/", response_model=List[schemas.Note])
-async def list_notes(meeting_id: Optional[int] = Query(None)):
+def list_notes(meeting_id: Optional[int] = Query(None)):
     """
     List all notes, optionally filtered by meeting_id.
     """
@@ -132,22 +139,17 @@ async def list_notes(meeting_id: Optional[int] = Query(None)):
 
 
 @app.get("/notes/{note_id}", response_model=schemas.Note)
-async def get_note(note_id: int):
+def get_note(note_id: int):
     """
     Get a specific note by ID.
     """
     # Stub: Return a mock note
-    return schemas.Note(
-        id=note_id,
-        content="Sample note content",
-        meeting_id=1,
-        created_at=datetime.utcnow()
-    )
+    return schemas.Note(id=note_id, content="Sample note content", meeting_id=1, created_at=datetime.now(timezone.utc))
 
 
 # Task endpoints
 @app.post("/tasks/", response_model=schemas.Task, status_code=201)
-async def create_task(task: schemas.TaskCreate):
+def create_task(task: schemas.TaskCreate):
     """
     Create a new task that is due at a specific meeting.
     """
@@ -158,12 +160,12 @@ async def create_task(task: schemas.TaskCreate):
         description=task.description,
         status=task.status,
         due_meeting_id=task.due_meeting_id,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc),
     )
 
 
 @app.get("/tasks/", response_model=List[schemas.Task])
-async def list_tasks(meeting_id: Optional[int] = Query(None), status: Optional[str] = Query(None)):
+def list_tasks(meeting_id: Optional[int] = Query(None), status: Optional[schemas.TaskStatus] = Query(None)):
     """
     List all tasks, optionally filtered by meeting_id or status.
     """
@@ -172,7 +174,7 @@ async def list_tasks(meeting_id: Optional[int] = Query(None), status: Optional[s
 
 
 @app.get("/tasks/{task_id}", response_model=schemas.Task)
-async def get_task(task_id: int):
+def get_task(task_id: int):
     """
     Get a specific task by ID.
     """
@@ -183,12 +185,12 @@ async def get_task(task_id: int):
         description="Sample task description",
         status="pending",
         due_meeting_id=1,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc),
     )
 
 
 @app.put("/tasks/{task_id}", response_model=schemas.Task)
-async def update_task(task_id: int, task: schemas.TaskUpdate):
+def update_task(task_id: int, task: schemas.TaskUpdate):
     """
     Update a task (e.g., change status, reassign to different meeting).
     """
@@ -199,12 +201,12 @@ async def update_task(task_id: int, task: schemas.TaskUpdate):
         description=task.description,
         status=task.status or "pending",
         due_meeting_id=task.due_meeting_id or 1,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc),
     )
 
 
 @app.delete("/tasks/{task_id}", status_code=204)
-async def delete_task(task_id: int):
+def delete_task(task_id: int):
     """
     Delete a task.
     """
@@ -213,17 +215,12 @@ async def delete_task(task_id: int):
 
 
 @app.get("/")
-async def root():
+def root():
     """
     Root endpoint to verify the API is running.
     """
     return {
         "message": "Welcome to the Meeting Notes API",
         "version": "1.0.0",
-        "endpoints": {
-            "users": "/users/",
-            "meetings": "/meetings/",
-            "notes": "/notes/",
-            "tasks": "/tasks/"
-        }
+        "endpoints": {"users": "/users/", "meetings": "/meetings/", "notes": "/notes/", "tasks": "/tasks/"},
     }

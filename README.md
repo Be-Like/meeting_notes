@@ -25,9 +25,21 @@ To do this:
 
 ## Setup
 
+Python 3.12 is required. The pinned pydantic 2.5.3 does not build on Python 3.13 or later.
+
 1. Install dependencies:
 ```bash
 pip install -r requirements.txt
+```
+
+For a development environment, install the runtime and development dependencies instead:
+```bash
+pip install -r requirements-dev.txt
+```
+
+Run the format check, linter, and tests with:
+```bash
+scripts/check.sh
 ```
 
 2. Run the application:
