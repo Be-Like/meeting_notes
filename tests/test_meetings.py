@@ -388,3 +388,62 @@ def test_api_update_by_one_attendee_shows_on_the_others_next_read(client, runtim
     assert detail.status_code == 200
     assert detail.json()["title"] == "Renamed"
     assert len(runtime.transport.envelopes) == sent + 1
+
+
+def post_note(client, account, meeting_id, content="Ship it"):
+    response = client.post("/notes/", json={"content": content, "meeting_id": meeting_id}, headers=account.headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def post_task(client, account, meeting_id, title="Write it up"):
+    response = client.post("/tasks/", json={"title": title, "due_meeting_id": meeting_id}, headers=account.headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_api_delete_cascades_to_api_posted_notes_tasks_and_attendee_rows(client, user_for, db_session):
+    ada = user_for("ada@example.com", "Ada")
+    grace = user_for("grace@example.com", "Grace")
+    created = post_meeting(client, ada, [grace.id])
+    post_note(client, ada, created["id"])
+    post_task(client, ada, created["id"])
+
+    assert client.delete(f"/meetings/{created['id']}", headers=ada.headers).status_code == 204
+
+    db_session.expire_all()
+    for table in (Meeting, Note, Task, meeting_users):
+        assert db_session.scalar(select(func.count()).select_from(table)) == 0, table
+
+
+def test_api_get_shows_api_posted_notes_and_tasks_ordered_by_id(client, user_for):
+    ada = user_for("ada@example.com", "Ada")
+    meeting_id = post_meeting(client, ada, [])["id"]
+    notes = [post_note(client, ada, meeting_id, content) for content in ("first", "second")]
+    tasks = [post_task(client, ada, meeting_id, title) for title in ("draft", "review")]
+
+    detail = client.get(f"/meetings/{meeting_id}", headers=ada.headers).json()
+
+    assert detail["notes"] == notes
+    assert detail["tasks"] == tasks
+    assert [n["id"] for n in notes] == sorted(n["id"] for n in notes)
+    assert [t["id"] for t in tasks] == sorted(t["id"] for t in tasks)
+
+
+def test_api_removed_attendees_next_note_and_task_lists_are_empty_not_cached(client, runtime, user_for):
+    ada = user_for("ada@example.com", "Ada")
+    grace = user_for("grace@example.com", "Grace")
+    meeting_id = post_meeting(client, ada, [grace.id])["id"]
+    post_note(client, ada, meeting_id)
+    post_task(client, ada, meeting_id)
+    assert len(client.get("/notes/", headers=grace.headers).json()) == 1
+    assert len(client.get("/tasks/", headers=grace.headers).json()) == 1
+
+    put = client.put(f"/meetings/{meeting_id}", json={"attendee_ids": []}, headers=ada.headers)
+    assert put.status_code == 200
+
+    for path in ("/notes/", "/tasks/"):
+        sent = len(runtime.transport.envelopes)
+        response = client.get(path, headers=grace.headers)
+        assert (response.status_code, response.json()) == (200, [])
+        assert len(runtime.transport.envelopes) == sent + 1, path
