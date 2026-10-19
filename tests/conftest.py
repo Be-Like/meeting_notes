@@ -13,14 +13,15 @@ from sqlalchemy.pool import StaticPool
 from auth import get_runtime
 from database import get_db
 from main import app
-from mesh import CallEnvelope, InMemoryTransport, MeshRuntime, Reply, build_runtime
+from mesh import CallEnvelope, MeshRuntime, Reply, Transport, build_runtime
 from models import Base
 
 
 class RecordingTransport:
-    """Wraps an InMemoryTransport and keeps every envelope it sees, so a test can tell a cache hit from a send."""
+    """Wraps a Transport and keeps every envelope it sees, so a test can tell a cache hit from a send. Around the
+    router it sees every call; around one inner transport it sees the calls routed there."""
 
-    def __init__(self, inner: InMemoryTransport) -> None:
+    def __init__(self, inner: Transport) -> None:
         self.inner = inner
         self.envelopes: list[CallEnvelope] = []
 
@@ -46,12 +47,12 @@ def db_session(db_engine):
     session.close()
 
 
-@pytest.fixture
-def runtime(db_engine) -> MeshRuntime:
-    """A MeshRuntime over the test engine with its transport recorded, so a cache hit is a request with no
-    new envelope."""
+@pytest.fixture(params=["memory", "json"])
+def runtime(request, db_engine) -> MeshRuntime:
+    """A MeshRuntime over the test engine under one transport, with its router recorded, so a cache hit is a
+    request with no new envelope. Every test that depends on it runs once per transport (story 33)."""
     factory = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
-    runtime = build_runtime({}, session_factory=factory)
+    runtime = build_runtime({"MESH_TRANSPORT": request.param}, session_factory=factory)
     runtime.transport = RecordingTransport(runtime.transport)
     return runtime
 

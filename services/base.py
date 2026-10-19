@@ -1,10 +1,15 @@
-"""What a service author needs: the registry, the base class, and the read-only marker."""
+"""What a service author needs: the registry, the base class, the read-only marker, and the two models the mesh
+derives from a method's signature."""
 
 from __future__ import annotations
 
+import functools
+import inspect
+import typing
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, TypeVar
 
+from pydantic import BaseModel, ConfigDict, create_model
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
@@ -25,6 +30,29 @@ def read_only(fn: F) -> F:
 
 def is_read_only(fn: Callable) -> bool:
     return getattr(fn, READ_ONLY_ATTR, False)
+
+
+@functools.cache
+def input_model(fn: Callable) -> type[BaseModel]:
+    """create_model over every parameter but self: (hint, default) from get_type_hints and the signature, extra
+    forbidden (D23). Memoised on the function, so the decorator and the dispatcher share one class per method."""
+    hints = typing.get_type_hints(fn)
+    parameters = list(inspect.signature(fn).parameters.values())
+    if parameters and parameters[0].name == "self":
+        parameters = parameters[1:]
+    fields: dict[str, Any] = {
+        p.name: (hints[p.name], ... if p.default is inspect.Parameter.empty else p.default) for p in parameters
+    }
+    return create_model(f"{fn.__name__} input", __config__=ConfigDict(extra="forbid"), **fields)
+
+
+@functools.cache
+def output_model(fn: Callable) -> type[BaseModel]:
+    """create_model with one required field, result, typed as the return hint, or None when there is none."""
+    hint = typing.get_type_hints(fn).get("return", type(None))
+    if hint is None:
+        hint = type(None)
+    return create_model(f"{fn.__name__} output", result=(hint, ...))
 
 
 class ServiceRegistry:

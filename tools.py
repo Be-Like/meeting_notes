@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import inspect
 import json
-import typing
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from errors import MeshError, UnknownTool
-from services.base import ServiceRegistry
+from services.base import ServiceRegistry, input_model, output_model
 from services.base import read_only as mark_read_only  # the decorator's read_only argument shadows the name
 
 F = TypeVar("F", bound=Callable)
@@ -59,8 +58,8 @@ def tool(*, title: str, read_only: bool, destructive: bool, idempotent: bool) ->
             read_only=read_only,
             destructive=destructive,
             idempotent=idempotent,
-            input_model=_input_model(fn),
-            output_model=_output_model(fn),
+            input_model=input_model(fn),
+            output_model=output_model(fn),
         )
         if read_only:
             mark_read_only(fn)
@@ -68,27 +67,6 @@ def tool(*, title: str, read_only: bool, destructive: bool, idempotent: bool) ->
         return fn
 
     return decorate
-
-
-def _input_model(fn: Callable) -> type[BaseModel]:
-    """create_model over every parameter but self: (hint, default) from get_type_hints and the signature, extra
-    forbidden (D23). A parameter typed with a schema model becomes one property holding that model's schema."""
-    hints = typing.get_type_hints(fn)
-    parameters = list(inspect.signature(fn).parameters.values())
-    if parameters and parameters[0].name == "self":
-        parameters = parameters[1:]
-    fields: dict[str, Any] = {
-        p.name: (hints[p.name], ... if p.default is inspect.Parameter.empty else p.default) for p in parameters
-    }
-    return create_model(f"{fn.__name__} input", __config__=ConfigDict(extra="forbid"), **fields)
-
-
-def _output_model(fn: Callable) -> type[BaseModel]:
-    """create_model with one required field, result, typed as the return hint, or None when there is none."""
-    hint = typing.get_type_hints(fn).get("return", type(None))
-    if hint is None:
-        hint = type(None)
-    return create_model(f"{fn.__name__} output", result=(hint, ...))
 
 
 class ToolAnnotations(BaseModel):

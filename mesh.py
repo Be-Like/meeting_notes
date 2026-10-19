@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from cache import Cache, InMemoryCache, cache_key
 from errors import ErrorPayload, MeshError, NoUser, UnknownService, from_payload, to_payload
-from services.base import DEFAULT_REGISTRY, ServiceRegistry, is_read_only
+from services.base import DEFAULT_REGISTRY, ServiceRegistry, input_model, is_read_only, output_model
 from tools import ToolDefinition, ToolRegistry, ToolResult
 
 
@@ -32,6 +32,9 @@ class Reply(BaseModel):
 
 
 class Transport(Protocol):
+    """The outbound role (D41): carry one envelope to a dispatcher and bring one reply back. In memory it is a
+    method call, over JSON a string each way, over gRPC it would be a client stub."""
+
     def send(self, envelope: CallEnvelope) -> Reply: ...
 
 
@@ -59,11 +62,16 @@ class Dispatcher:
             cls = self._registry.get(envelope.service)
         except UnknownService as exc:
             return Reply(error=to_payload(exc))
-
+        fn = getattr(cls, envelope.method)
+        # Rehydrate against the hints before a session exists (D33): a dict becomes the model, an instance passes
+        # through unchanged, and a value that fits neither is a ValidationError that opens nothing.
+        model = input_model(fn)
+        validated = model.model_validate(envelope.arguments)
+        arguments = {name: getattr(validated, name) for name in model.model_fields}
         session = self._session_factory()
         try:
             service = cls(self._mesh_factory(envelope.user_id), envelope.user_id, session)
-            value = getattr(service, envelope.method)(**envelope.arguments)
+            value = getattr(service, envelope.method)(**arguments)
         except MeshError as exc:
             session.rollback()
             return Reply(error=to_payload(exc))
@@ -78,11 +86,40 @@ class Dispatcher:
 
 
 class InMemoryTransport:
+    """Hands the envelope object to the dispatcher in the same frame. Nothing is copied."""
+
     def __init__(self, dispatcher: Dispatcher) -> None:
         self._dispatcher = dispatcher
 
     def send(self, envelope: CallEnvelope) -> Reply:
         return self._dispatcher.dispatch(envelope)
+
+
+class JsonTransport:
+    """The loopback stand-in for a remote hop (D37): the same dispatcher, every envelope and reply crossing a JSON
+    string. Unset fields are excluded both ways, so a partial update keeps its meaning on the far side and a result
+    keeps the fields its service set on the near side. It rehydrates nothing; the dispatcher and the mesh do that
+    for every transport."""
+
+    def __init__(self, dispatcher: Dispatcher) -> None:
+        self._dispatcher = dispatcher
+
+    def send(self, envelope: CallEnvelope) -> Reply:
+        received = CallEnvelope.model_validate_json(envelope.model_dump_json(exclude_unset=True))
+        reply = self._dispatcher.dispatch(received)
+        return Reply.model_validate_json(reply.model_dump_json(exclude_unset=True))
+
+
+class TransportRouter:
+    """The outbound side's table (D41): each service name routes to one transport. Both mappings are read at send
+    time, so a test may replace an entry after the runtime is built."""
+
+    def __init__(self, transports: Mapping[str, Transport], routes: Mapping[str, str]) -> None:
+        self._transports = transports
+        self._routes = routes
+
+    def send(self, envelope: CallEnvelope) -> Reply:
+        return self._transports[self._routes[envelope.service]].send(envelope)
 
 
 class ServiceProxy:
@@ -137,11 +174,13 @@ class ServiceMesh:
         return self._tools.call(name, arguments, self.call)
 
     def call(self, service: str, method: str, arguments: dict[str, Any]) -> Any:
-        """The caller's side of every call (D14). The cache sits above routing (D40); errors never touch it."""
+        """The caller's side of every call (D14). The cache sits above routing (D40); errors never touch it. The
+        result is typed by the method's return hint whichever transport carried it (D15)."""
         if self.user_id is None:
             raise NoUser("the mesh needs an authenticated user id")
         cls = self._registry.get(service)
-        read = is_read_only(getattr(cls, method))
+        fn = getattr(cls, method)
+        read = is_read_only(fn)
 
         if read:
             key = cache_key(service, method, self.user_id, arguments)
@@ -154,37 +193,56 @@ class ServiceMesh:
         )
         if reply.error is not None:
             raise from_payload(reply.error)
+        result = output_model(fn)(result=reply.result).result
 
         if read:
-            if reply.result is not None:
-                self._cache.set(key, reply.result)
+            if result is not None:
+                self._cache.set(key, result)
         else:
             for name in (service, *cls.invalidates):
                 self._cache.clear(name)
-        return reply.result
+        return result
 
 
 class MeshRuntime:
-    """The per-process parts (D17): registry, cache, dispatcher, transport, tools. build_mesh is the per-request step.
+    """The per-process parts (D17): registry, cache, dispatcher, transports behind a router, tools. build_mesh is
+    the per-request step.
 
     The dispatcher's mesh factory is build_mesh itself, so a service on the far side gets a mesh over the same
-    transport and cache as its caller (story 17). build_mesh reads the attributes at call time, so a test may
-    swap the cache or wrap the transport after construction and every mesh, near or far, sees the swap.
+    transport and cache as its caller (story 17). transport is the router; the inner transports sit under
+    transports, one per distinct name in routes. The router and build_mesh read the attributes at call time, so a
+    test may swap the cache, wrap the router, or wrap one inner transport after construction and every mesh, near
+    or far, sees the swap.
     """
 
-    def __init__(self, registry: ServiceRegistry, cache: Cache, session_factory: Callable[[], Session]) -> None:
+    def __init__(
+        self,
+        registry: ServiceRegistry,
+        cache: Cache,
+        session_factory: Callable[[], Session],
+        routes: Mapping[str, str],
+    ) -> None:
         self.registry = registry
         self.cache = cache
         self.dispatcher = Dispatcher(registry, session_factory, self.build_mesh)
-        self.transport: Transport = InMemoryTransport(self.dispatcher)
+        self.routes: dict[str, str] = dict(routes)
+        self.transports: dict[str, Transport] = {
+            name: TRANSPORT_FACTORIES[name](self.dispatcher) for name in sorted(set(self.routes.values()))
+        }
+        self.transport: Transport = TransportRouter(self.transports, self.routes)
         self.tools = ToolRegistry(registry)  # once per process, after every service module is imported (D42)
 
     def build_mesh(self, user_id: int) -> ServiceMesh:
         return ServiceMesh(user_id, self.registry, self.transport, self.cache, self.tools)
 
 
-TRANSPORTS = ("memory",)
+TRANSPORT_FACTORIES: dict[str, Callable[[Dispatcher], Transport]] = {
+    "memory": InMemoryTransport,
+    "json": JsonTransport,
+}
+TRANSPORTS = tuple(TRANSPORT_FACTORIES)  # the first entry is the default
 CACHES = ("memory",)
+ROUTE_PREFIX = "MESH_TRANSPORT_"
 
 
 def _choice(env: Mapping[str, str], name: str, known: tuple[str, ...]) -> str:
@@ -205,6 +263,21 @@ def _ttl(env: Mapping[str, str]) -> float:
     return ttl
 
 
+def _routes(env: Mapping[str, str], registry: ServiceRegistry) -> dict[str, str]:
+    """MESH_TRANSPORT for every registered service, then MESH_TRANSPORT_<SERVICE> as an override. An override that
+    names no service, or a transport outside TRANSPORTS, raises; nothing falls back silently (stories 26, 27)."""
+    default = _choice(env, "MESH_TRANSPORT", TRANSPORTS)
+    routes = {name: default for name in registry.names()}
+    by_variable = {ROUTE_PREFIX + name.upper(): name for name in registry.names()}
+    for key in sorted(env):
+        if not key.startswith(ROUTE_PREFIX):
+            continue
+        if key not in by_variable:
+            raise ValueError(f"{key} names no registered service; expected one of: {', '.join(by_variable)}")
+        routes[by_variable[key]] = _choice(env, key, TRANSPORTS)
+    return routes
+
+
 def build_runtime(
     env: Mapping[str, str] | None = None,
     *,
@@ -213,6 +286,6 @@ def build_runtime(
 ) -> MeshRuntime:
     """The startup step (stories 48 to 52). Fails on an unknown name or a bad TTL; never falls back silently."""
     env = os.environ if env is None else env
-    _choice(env, "MESH_TRANSPORT", TRANSPORTS)
+    routes = _routes(env, registry)
     _choice(env, "MESH_CACHE", CACHES)
-    return MeshRuntime(registry, InMemoryCache(ttl_seconds=_ttl(env)), session_factory)
+    return MeshRuntime(registry, InMemoryCache(ttl_seconds=_ttl(env)), session_factory, routes)

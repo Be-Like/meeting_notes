@@ -1,10 +1,23 @@
+from datetime import datetime, timezone
+
 import pytest
 from conftest import RecordingTransport
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+import schemas
 from cache import InMemoryCache, cache_key
 from errors import ERROR_TYPES, ErrorPayload, NotFound, NoUser, UnknownService, from_payload, to_payload
-from mesh import CallEnvelope, Dispatcher, InMemoryTransport, MeshRuntime, Reply, ServiceMesh, build_runtime
+from mesh import (
+    CallEnvelope,
+    Dispatcher,
+    InMemoryTransport,
+    JsonTransport,
+    MeshRuntime,
+    Reply,
+    ServiceMesh,
+    TransportRouter,
+    build_runtime,
+)
 from services.base import DEFAULT_REGISTRY, BaseService, ServiceRegistry, is_read_only, read_only
 from tools import ToolRegistry
 
@@ -49,6 +62,27 @@ class Alpha(BaseService, registry=REGISTRY):
     def nothing(self) -> None:
         CALLS.append((self.name, "nothing", {}))
         return None
+
+    def echo_update(self, data: schemas.MeetingUpdate) -> schemas.MeetingUpdate:
+        CALLS.append((self.name, "echo_update", {"data": data}))
+        return data
+
+    def echo_when(self, when: datetime) -> datetime:
+        CALLS.append((self.name, "echo_when", {"when": when}))
+        return when
+
+    def echo_status(self, status: schemas.TaskStatus) -> schemas.TaskStatus:
+        CALLS.append((self.name, "echo_status", {"status": status}))
+        return status
+
+    def items(self) -> list[Item]:
+        CALLS.append((self.name, "items", {}))
+        return [Item(id=1, value="a"), Item(id=2, value="b")]
+
+    def put_via_beta(self, item_id: int, value: str) -> Item:
+        CALLS.append((self.name, "put_via_beta", {"item_id": item_id, "value": value}))
+        self.mesh.beta.put(item_id=item_id, value=value)
+        raise NotFound(f"item {item_id} not found")
 
 
 class Beta(BaseService, registry=REGISTRY):
@@ -110,10 +144,10 @@ class MeshParts:
     """The production wiring from build_runtime over REGISTRY and fake sessions, with the cache swapped for one on
     a controllable clock and the transport wrapped so every send, near or far, is recorded."""
 
-    def __init__(self) -> None:
+    def __init__(self, transport: str = "memory") -> None:
         self.clock = Clock()
         self.sessions = FakeSessionFactory()
-        self.runtime = build_runtime({}, registry=REGISTRY, session_factory=self.sessions)
+        self.runtime = build_runtime({"MESH_TRANSPORT": transport}, registry=REGISTRY, session_factory=self.sessions)
         self.runtime.cache = self.cache = InMemoryCache(ttl_seconds=60, clock=self.clock)
         self.runtime.transport = self.transport = RecordingTransport(self.runtime.transport)
         self.build_mesh = self.runtime.build_mesh
@@ -122,9 +156,9 @@ class MeshParts:
         return [(e.user_id, e.service, e.method) for e in self.transport.envelopes]
 
 
-@pytest.fixture
-def parts():
-    return MeshParts()
+@pytest.fixture(params=["memory", "json"])
+def parts(request):
+    return MeshParts(request.param)
 
 
 @pytest.fixture(autouse=True)
@@ -317,6 +351,85 @@ def test_dispatch_binds_service_to_envelope_user_and_mesh(sessions, meshes):
     assert service.session is session
 
 
+def test_dispatch_rehydrates_arguments_against_the_hints(dispatcher, sessions, meshes):
+    reply = dispatcher.dispatch(envelope("alpha", "echo_update", data={"title": "x"}))
+
+    assert type(reply.result) is schemas.MeetingUpdate
+    received = CALLS[-1][2]["data"]
+    assert type(received) is schemas.MeetingUpdate
+    assert received.model_fields_set == {"title"}
+    assert [session.log for session in sessions.sessions] == [["commit", "close"]]
+
+
+def test_dispatch_validation_error_opens_no_session(dispatcher, sessions):
+    with pytest.raises(ValidationError):
+        dispatcher.dispatch(envelope("alpha", "get", item_id="x"))
+
+    assert sessions.sessions == []
+    assert CALLS == []
+
+
+def test_update_crosses_with_only_the_set_fields(parts):
+    result = parts.build_mesh(7).alpha.echo_update(data=schemas.MeetingUpdate(title="x"))
+
+    received = CALLS[-1][2]["data"]
+    assert type(received) is schemas.MeetingUpdate
+    assert received.model_fields_set == {"title"}
+    assert type(result) is schemas.MeetingUpdate
+    assert result.model_fields_set == {"title"}
+    assert result.description is None
+
+
+def test_datetime_enum_list_and_none_results_keep_their_types(parts):
+    mesh = parts.build_mesh(7)
+    when = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+
+    returned = mesh.alpha.echo_when(when=when)
+    assert returned == when
+    assert returned.tzinfo is not None
+
+    assert mesh.alpha.echo_status(status=schemas.TaskStatus.pending) is schemas.TaskStatus.pending
+    assert CALLS[-1] == ("alpha", "echo_status", {"status": schemas.TaskStatus.pending})
+    assert CALLS[-1][2]["status"] is schemas.TaskStatus.pending
+
+    items = mesh.alpha.items()
+    assert items == [Item(id=1, value="a"), Item(id=2, value="b")]
+    assert all(type(item) is Item for item in items)
+
+    assert mesh.alpha.nothing() is None
+
+
+def test_memory_returns_the_callers_instance_and_json_an_equal_copy():
+    data = schemas.MeetingUpdate(title="x")
+
+    assert MeshParts("memory").build_mesh(7).alpha.echo_update(data=data) is data
+
+    copy = MeshParts("json").build_mesh(7).alpha.echo_update(data=data)
+    assert copy == data
+    assert copy is not data
+    assert copy.model_fields_set == {"title"}
+
+
+def test_cache_hit_serves_the_type_the_transport_built(parts):
+    mesh = parts.build_mesh(7)
+
+    first = mesh.alpha.get(item_id=1)
+    second = mesh.alpha.get(item_id=1)
+
+    assert type(first) is Item
+    assert second is first
+    assert len(parts.transport.envelopes) == 1
+    assert CALLS == [("alpha", "get", {"item_id": 1})]
+
+
+def test_sibling_write_is_committed_when_the_caller_raises(parts):
+    with pytest.raises(NotFound, match="item 1 not found"):
+        parts.build_mesh(7).alpha.put_via_beta(item_id=1, value="v")
+
+    assert [session.log for session in parts.sessions.sessions] == [["rollback", "close"], ["commit", "close"]]
+    assert parts.sent() == [(7, "alpha", "put_via_beta"), (7, "beta", "put")]
+
+
 def test_proxy_call_produces_triple_envelope_with_user_id(parts):
     result = parts.build_mesh(7).alpha.get(item_id=1)
 
@@ -475,7 +588,10 @@ def test_build_runtime_defaults_to_memory_with_sixty_second_ttl():
     assert isinstance(runtime, MeshRuntime)
     assert runtime.registry is REGISTRY
     assert isinstance(runtime.dispatcher, Dispatcher)
-    assert isinstance(runtime.transport, InMemoryTransport)
+    assert isinstance(runtime.transport, TransportRouter)
+    assert runtime.routes == {"alpha": "memory", "beta": "memory"}
+    assert list(runtime.transports) == ["memory"]
+    assert isinstance(runtime.transports["memory"], InMemoryTransport)
     assert isinstance(runtime.cache, InMemoryCache)
     assert runtime.cache.ttl_seconds == 60
 
@@ -497,3 +613,77 @@ def test_meshes_from_one_runtime_share_the_cache_per_user():
     assert CALLS == [("alpha", "get", {"item_id": 1})] * 2
     with pytest.raises(NoUser):
         runtime.build_mesh(None)
+
+
+def test_json_transport_returns_a_dict_result_and_the_far_side_an_int(dispatcher):
+    reply = JsonTransport(dispatcher).send(envelope("alpha", "get", item_id=1))
+
+    assert reply == Reply(result={"id": 1, "value": "alpha 1"})
+    assert type(reply.result) is dict
+    assert CALLS == [("alpha", "get", {"item_id": 1})]
+    assert type(CALLS[0][2]["item_id"]) is int
+
+
+def test_json_transport_carries_an_error_reply_and_propagates_other_exceptions(dispatcher, sessions):
+    transport = JsonTransport(dispatcher)
+
+    reply = transport.send(envelope("alpha", "missing", item_id=1))
+    assert reply == Reply(error=ErrorPayload(type="NotFound", message="item 1 not found"))
+    assert reply.result is None
+
+    with pytest.raises(RuntimeError, match="boom"):
+        transport.send(envelope("alpha", "boom"))
+    assert sessions.sessions[-1].log == ["rollback", "close"]
+
+
+def test_build_runtime_json_builds_one_json_transport_behind_a_router():
+    runtime = build_runtime({"MESH_TRANSPORT": "json"}, registry=REGISTRY, session_factory=FakeSessionFactory())
+
+    assert runtime.routes == {"alpha": "json", "beta": "json"}
+    assert list(runtime.transports) == ["json"]
+    assert isinstance(runtime.transports["json"], JsonTransport)
+    assert isinstance(runtime.transport, TransportRouter)
+    assert runtime.build_mesh(7).alpha.get(item_id=1) == Item(id=1, value="alpha 1")
+
+
+def test_build_runtime_override_routes_one_service():
+    runtime = build_runtime({"MESH_TRANSPORT_ALPHA": "json"}, registry=REGISTRY, session_factory=FakeSessionFactory())
+
+    assert runtime.routes == {"alpha": "json", "beta": "memory"}
+    assert sorted(runtime.transports) == ["json", "memory"]
+
+    runtime = build_runtime(
+        {"MESH_TRANSPORT_ALPHA": "json", "MESH_TRANSPORT_BETA": "json"},
+        registry=REGISTRY,
+        session_factory=FakeSessionFactory(),
+    )
+    assert runtime.routes == {"alpha": "json", "beta": "json"}
+    assert list(runtime.transports) == ["json"]
+
+
+def test_build_runtime_rejects_unknown_override_service_and_transport():
+    with pytest.raises(
+        ValueError,
+        match="MESH_TRANSPORT_GAMMA names no registered service; expected one of: MESH_TRANSPORT_ALPHA, "
+        "MESH_TRANSPORT_BETA",
+    ):
+        build_runtime({"MESH_TRANSPORT_GAMMA": "json"}, registry=REGISTRY, session_factory=FakeSessionFactory())
+
+    with pytest.raises(ValueError, match="MESH_TRANSPORT_ALPHA='grpc' is not supported; expected one of: memory, json"):
+        build_runtime({"MESH_TRANSPORT_ALPHA": "grpc"}, registry=REGISTRY, session_factory=FakeSessionFactory())
+
+
+def test_sibling_call_crosses_from_json_to_memory():
+    runtime = build_runtime({"MESH_TRANSPORT_ALPHA": "json"}, registry=REGISTRY, session_factory=FakeSessionFactory())
+    json_recorder = runtime.transports["json"] = RecordingTransport(runtime.transports["json"])
+    memory_recorder = runtime.transports["memory"] = RecordingTransport(runtime.transports["memory"])
+    outer_recorder = runtime.transport = RecordingTransport(runtime.transport)
+
+    assert runtime.build_mesh(7).beta.get_via_alpha(item_id=1) == Item(id=1, value="alpha 1")
+
+    def sent(recorder: RecordingTransport) -> list[tuple[int, str, str]]:
+        return [(e.user_id, e.service, e.method) for e in recorder.envelopes]
+
+    assert sent(memory_recorder) == [(7, "beta", "get_via_alpha")]
+    assert sent(json_recorder) == [(7, "alpha", "get")]
+    assert sent(outer_recorder) == [(7, "beta", "get_via_alpha"), (7, "alpha", "get")]
