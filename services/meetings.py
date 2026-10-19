@@ -1,4 +1,4 @@
-"""Meetings (D4, D6, D7, D9): the first scoped service and the first to call a sibling through the mesh."""
+"""Meetings: the first scoped service, and the one that reaches a sibling through the mesh."""
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -16,23 +16,21 @@ class MeetingService(BaseService):
     invalidates = ("notes", "tasks")
 
     def scope(self, stmt: Select) -> Select:
-        """Visible exactly when self.user_id attends (D4)."""
+        """Visible exactly when self.user_id attends."""
         return stmt.where(Meeting.id.in_(attended_meeting_ids(self.user_id)))
 
     def _owned(self, meeting_id: int) -> Select:
-        """The scope plus the creator condition: update and delete start here (D6, D9)."""
+        """The scope plus the creator condition; update and delete start here."""
         return self.scope(select(Meeting)).where(Meeting.id == meeting_id, Meeting.created_by_id == self.user_id)
 
     def _attendee_rows(self, ids: list[int]) -> list[User]:
-        """Dedupe, add the caller, validate every id through self.mesh.users.get, then load the rows (D7, D14)."""
         wanted = set(ids) | {self.user_id}
-        # Every mesh call precedes the first statement on self.session (ARD "The request path").
+        # Every mesh call precedes the first statement on self.session, so a bad id leaves nothing to roll back.
         for user_id in sorted(wanted):
             self.mesh.users.get(user_id=user_id)
         return list(self.session.scalars(select(User).where(User.id.in_(wanted))).all())
 
     def _to_schema(self, row: Meeting, details: bool = False) -> schemas.Meeting:
-        """Meeting or MeetingWithDetails with attendees, notes, and tasks sorted by id (D33)."""
         meeting = (schemas.MeetingWithDetails if details else schemas.Meeting).model_validate(row)
         meeting.attendees.sort(key=lambda user: user.id)
         if isinstance(meeting, schemas.MeetingWithDetails):
@@ -109,5 +107,5 @@ class MeetingService(BaseService):
         row = self.session.scalars(self._owned(meeting_id)).first()
         if row is None:
             raise NotFound(f"meeting {meeting_id} not found")
-        # The ORM cascade removes notes and tasks and the secondary relationship the meeting_users rows (D30).
+        # The ORM cascade removes notes and tasks and the secondary relationship the meeting_users rows.
         self.session.delete(row)

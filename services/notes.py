@@ -1,4 +1,4 @@
-"""Notes (D5): the first service whose visibility is borrowed from the meeting the row belongs to."""
+"""Notes: visibility borrowed from the meeting the note belongs to."""
 
 from sqlalchemy import select
 from sqlalchemy.sql import Select
@@ -15,14 +15,14 @@ class NoteService(BaseService):
     invalidates = ("meetings",)
 
     def scope(self, stmt: Select) -> Select:
-        """Visible exactly when self.user_id attends the note's meeting (D4, D5)."""
+        """Visible exactly when self.user_id attends the note's meeting."""
         return stmt.where(Note.meeting_id.in_(attended_meeting_ids(self.user_id)))
 
     @tool(title="Create note", read_only=False, destructive=False, idempotent=False)
     def create(self, data: schemas.NoteCreate) -> schemas.Note:
         """Add a note to a meeting the caller attends. A meeting the caller does not attend, or that does not exist,
         is "meeting <id> not found" and nothing is created. Calling twice adds a second note."""
-        # Called for its NotFound: a hidden and a missing meeting raise before the session is touched (D36).
+        # Called for its NotFound: a hidden or missing meeting raises before the session is touched.
         self.mesh.meetings.get(meeting_id=data.meeting_id)
         row = Note(content=data.content, meeting_id=data.meeting_id)
         self.session.add(row)

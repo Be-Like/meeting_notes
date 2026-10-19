@@ -1,4 +1,4 @@
-"""The users directory (D8): the first real service and the one P3 calls to validate attendee ids."""
+"""The users directory, readable by every authenticated user."""
 
 from sqlalchemy import select
 from sqlalchemy.sql import Select
@@ -14,12 +14,12 @@ class UserService(BaseService):
     name = "users"
 
     def scope(self, stmt: Select) -> Select:
-        """Any authenticated user may read the whole directory (D8)."""
+        """Any authenticated user may read the whole directory."""
         return stmt
 
     @tool(title="List users", read_only=True, destructive=False, idempotent=True)
     def list(self) -> list[schemas.User]:
-        """List every user in the directory, ordered by id. Any authenticated user may read the whole directory (D8)."""
+        """List every user in the directory, ordered by id. Any authenticated user may read the whole directory."""
         rows = self.session.scalars(self.scope(select(User)).order_by(User.id))
         return [schemas.User.model_validate(row) for row in rows]
 

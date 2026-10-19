@@ -1,4 +1,4 @@
-"""Tasks (D5, D29): borrowed visibility, a status enum stored as its value, and reassignment through the mesh."""
+"""Tasks: borrowed visibility, a status enum stored as its value, reassignment through the mesh."""
 
 from sqlalchemy import select
 from sqlalchemy.sql import Select
@@ -15,11 +15,11 @@ class TaskService(BaseService):
     invalidates = ("meetings",)
 
     def scope(self, stmt: Select) -> Select:
-        """Visible exactly when self.user_id attends the meeting the task is due at (D4, D5)."""
+        """Visible exactly when self.user_id attends the meeting the task is due at."""
         return stmt.where(Task.due_meeting_id.in_(attended_meeting_ids(self.user_id)))
 
     def _visible(self, task_id: int) -> Task:
-        """The scoped row, or NotFound with one message for hidden and missing (D9). Three methods start here."""
+        """The scoped row, or NotFound with one message for hidden and missing."""
         row = self.session.scalars(self.scope(select(Task)).where(Task.id == task_id)).first()
         if row is None:
             raise NotFound(f"task {task_id} not found")
@@ -30,7 +30,7 @@ class TaskService(BaseService):
         """Add a task due at a meeting the caller attends; status defaults to pending. A meeting the caller does not
         attend, or that does not exist, is "meeting <id> not found" and nothing is created. Calling twice adds a
         second task."""
-        # Called for its NotFound: a hidden and a missing meeting raise before the session is touched (D36).
+        # Called for its NotFound: a hidden or missing meeting raises before the session is touched.
         self.mesh.meetings.get(meeting_id=data.due_meeting_id)
         row = Task(
             title=data.title,
@@ -52,7 +52,7 @@ class TaskService(BaseService):
         if meeting_id is not None:
             stmt = stmt.where(Task.due_meeting_id == meeting_id)
         if status is not None:
-            # FastAPI sends the enum and a JSON transport would send its string; both store as the value (D29).
+            # FastAPI sends the enum and a JSON transport would send its string; both store as the value.
             stmt = stmt.where(Task.status == schemas.TaskStatus(status).value)
         return [schemas.Task.model_validate(row) for row in self.session.scalars(stmt)]
 
@@ -70,13 +70,12 @@ class TaskService(BaseService):
         # The scoped read precedes the mesh call because a read leaves nothing to roll back.
         row = self._visible(task_id)
         changes = data.model_dump(exclude_unset=True)
-        # title, status, and due_meeting_id sent as null are treated as not sent; description as null clears
-        # (PRD outcome 3).
+        # title, status, and due_meeting_id sent as null are treated as not sent; description as null clears.
         for field in ("title", "status", "due_meeting_id"):
             if field in changes and changes[field] is None:
                 del changes[field]
         if "due_meeting_id" in changes:
-            # Validated through the mesh before the first write, so a 404 leaves every field as it was (D36).
+            # Validated through the mesh before the first write, so a 404 leaves every field as it was.
             self.mesh.meetings.get(meeting_id=changes["due_meeting_id"])
         if "status" in changes:
             changes["status"] = schemas.TaskStatus(changes["status"]).value

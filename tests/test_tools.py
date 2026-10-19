@@ -233,8 +233,8 @@ def test_unknown_tool_raises_and_nothing_is_sent():
 
 # Through the runtime: the real registry, users seeded by auth on db_engine, the engine the runtime's sessions use.
 
-# Title, readOnlyHint, destructiveHint, idempotentHint per tool (ARD hint table). A method added without @tool, a tool
-# removed, or a hint changed fails the tests below.
+# Title, readOnlyHint, destructiveHint, idempotentHint per tool. A method added without @tool, a tool removed, or a
+# hint changed fails the tests below.
 HINTS = {
     "meetings.create": ("Create meeting", False, False, False),
     "meetings.delete": ("Delete meeting", False, True, True),

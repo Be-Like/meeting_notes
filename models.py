@@ -43,7 +43,7 @@ meeting_users = Table(
 
 
 def attended_meeting_ids(user_id: int) -> Select:
-    """Meeting ids the user attends (D4). The one home of the visibility rule; every scope filters through it."""
+    """Meeting ids the user attends: the one home of the visibility rule; every scope filters through it."""
     return select(meeting_users.c.meeting_id).where(meeting_users.c.user_id == user_id)
 
 

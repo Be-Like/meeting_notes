@@ -18,8 +18,7 @@ from models import Base
 
 
 class RecordingTransport:
-    """Wraps a Transport and keeps every envelope it sees, so a test can tell a cache hit from a send. Around the
-    router it sees every call; around one inner transport it sees the calls routed there."""
+    """Keeps every envelope it sees, so a test can tell a cache hit from a send."""
 
     def __init__(self, inner: Transport) -> None:
         self.inner = inner
@@ -49,8 +48,7 @@ def db_session(db_engine):
 
 @pytest.fixture(params=["memory", "json"])
 def runtime(request, db_engine) -> MeshRuntime:
-    """A MeshRuntime over the test engine under one transport, with its router recorded, so a cache hit is a
-    request with no new envelope. Every test that depends on it runs once per transport (story 33)."""
+    """Built under one transport with the router recorded; every test that depends on it runs once per transport."""
     factory = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
     runtime = build_runtime({"MESH_TRANSPORT": request.param}, session_factory=factory)
     runtime.transport = RecordingTransport(runtime.transport)
@@ -59,8 +57,7 @@ def runtime(request, db_engine) -> MeshRuntime:
 
 @pytest.fixture
 def client(db_engine, runtime):
-    """TestClient with get_db overridden to a per-request session on db_engine and get_runtime to the runtime
-    fixture. Lifespan is not entered."""
+    """get_db and get_runtime overridden; the lifespan is not entered."""
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
 
     def override_get_db():
@@ -102,7 +99,7 @@ def user_for(client):
 
 @pytest.fixture
 def headers_for(user_for):
-    """P2's helper, unchanged in signature: the headers of user_for(...)."""
+    """The headers of user_for(...)."""
 
     def _headers_for(email: str, name: str = "Test User", password: str = "correct horse") -> dict[str, str]:
         return user_for(email, name, password).headers

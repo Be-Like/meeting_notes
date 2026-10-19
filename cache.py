@@ -1,4 +1,4 @@
-"""The mesh's result cache (D17 to D20). Imports nothing local, so a Redis backend is a new class, not a rewrite."""
+"""The mesh's result cache. Imports nothing local, so another backend is a new class, not a rewrite."""
 
 import json
 import threading

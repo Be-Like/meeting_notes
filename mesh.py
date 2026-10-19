@@ -1,5 +1,5 @@
-"""The in-process service mesh: envelope, reply, transport, dispatcher, the per-request mesh (D13 to D16), and the
-per-process runtime that composes them at startup (D17), including the tool view built once over the registry (D42)."""
+"""The in-process service mesh: envelope, reply, transports, dispatcher, the per-request mesh, and the per-process
+runtime."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from tools import ToolDefinition, ToolRegistry, ToolResult
 
 
 class CallEnvelope(BaseModel):
-    """One call as data (D33). It carries the caller's id, never a user object (D34)."""
+    """One call as data. It carries the caller's user id and nothing else about them."""
 
     user_id: int
     service: str
@@ -32,20 +32,13 @@ class Reply(BaseModel):
 
 
 class Transport(Protocol):
-    """The outbound role (D41): carry one envelope to a dispatcher and bring one reply back. In memory it is a
-    method call, over JSON a string each way, over gRPC it would be a client stub."""
+    """Carries one envelope to a dispatcher and brings one reply back."""
 
     def send(self, envelope: CallEnvelope) -> Reply: ...
 
 
 class Dispatcher:
-    """Far side of every transport (D32) and the only thing that instantiates a service.
-
-    This is where an inbound adapter (FastAPI now, a gRPC server later) and an outbound transport (in-memory
-    now, a gRPC client later) meet (D41). Each dispatch opens one session, commits on a return, rolls back on
-    any exception, and closes the session before the reply leaves (D36). A MeshError becomes Reply(error=...);
-    anything else is a bug and propagates unwrapped.
-    """
+    """Runs one service method in one session and packages a MeshError as a reply."""
 
     def __init__(
         self,
@@ -63,8 +56,8 @@ class Dispatcher:
         except UnknownService as exc:
             return Reply(error=to_payload(exc))
         fn = getattr(cls, envelope.method)
-        # Rehydrate against the hints before a session exists (D33): a dict becomes the model, an instance passes
-        # through unchanged, and a value that fits neither is a ValidationError that opens nothing.
+        # Rehydrate before a session exists: a dict becomes the model, an instance passes through, and a bad value
+        # is a ValidationError that opens nothing.
         model = input_model(fn)
         validated = model.model_validate(envelope.arguments)
         arguments = {name: getattr(validated, name) for name in model.model_fields}
@@ -96,10 +89,8 @@ class InMemoryTransport:
 
 
 class JsonTransport:
-    """The loopback stand-in for a remote hop (D37): the same dispatcher, every envelope and reply crossing a JSON
-    string. Unset fields are excluded both ways, so a partial update keeps its meaning on the far side and a result
-    keeps the fields its service set on the near side. It rehydrates nothing; the dispatcher and the mesh do that
-    for every transport."""
+    """The loopback stand-in for a remote hop: every envelope and reply crosses a JSON string, unset fields excluded
+    so a partial update keeps its meaning."""
 
     def __init__(self, dispatcher: Dispatcher) -> None:
         self._dispatcher = dispatcher
@@ -111,8 +102,8 @@ class JsonTransport:
 
 
 class TransportRouter:
-    """The outbound side's table (D41): each service name routes to one transport. Both mappings are read at send
-    time, so a test may replace an entry after the runtime is built."""
+    """Routes each service name to one transport. Both mappings are read at send time, so a test may swap one after
+    startup."""
 
     def __init__(self, transports: Mapping[str, Transport], routes: Mapping[str, str]) -> None:
         self._transports = transports
@@ -141,11 +132,8 @@ class ServiceProxy:
 
 
 class ServiceMesh:
-    """One per request, bound to one user id (D13). A mesh with no user cannot exist (D39).
-
-    The parts live under underscore names so that no service name can be shadowed by an attribute of the mesh.
-    get_tools and call_tool are the MCP-shaped face of the same mesh (D25); call_tool routes through call.
-    """
+    """One per request, bound to one user id. The parts live under underscore names so that no service name can be
+    shadowed."""
 
     def __init__(
         self, user_id: int, registry: ServiceRegistry, transport: Transport, cache: Cache, tools: ToolRegistry
@@ -166,16 +154,16 @@ class ServiceMesh:
         return ServiceProxy(self, name)
 
     def get_tools(self) -> list[ToolDefinition]:
-        """The MCP tool list (D25). The same for every user; what a tool returns is what depends on the user."""
+        """The same list for every user; what a tool returns is what depends on the user."""
         return list(self._tools.definitions)
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """Validate, route through call, answer as an MCP result (D25). UnknownTool raises; a MeshError is a result."""
+        """UnknownTool raises; a MeshError is a result."""
         return self._tools.call(name, arguments, self.call)
 
     def call(self, service: str, method: str, arguments: dict[str, Any]) -> Any:
-        """The caller's side of every call (D14). The cache sits above routing (D40); errors never touch it. The
-        result is typed by the method's return hint whichever transport carried it (D15)."""
+        """The cache is checked before routing and errors never touch it; the result is typed by the method's return
+        hint whichever transport carried it."""
         if self.user_id is None:
             raise NoUser("the mesh needs an authenticated user id")
         cls = self._registry.get(service)
@@ -205,15 +193,8 @@ class ServiceMesh:
 
 
 class MeshRuntime:
-    """The per-process parts (D17): registry, cache, dispatcher, transports behind a router, tools. build_mesh is
-    the per-request step.
-
-    The dispatcher's mesh factory is build_mesh itself, so a service on the far side gets a mesh over the same
-    transport and cache as its caller (story 17). transport is the router; the inner transports sit under
-    transports, one per distinct name in routes. The router and build_mesh read the attributes at call time, so a
-    test may swap the cache, wrap the router, or wrap one inner transport after construction and every mesh, near
-    or far, sees the swap.
-    """
+    """The per-process parts; build_mesh is the per-request step. The dispatcher's mesh factory is build_mesh
+    itself, so a far-side service gets a mesh over the same transport and cache."""
 
     def __init__(
         self,
@@ -230,7 +211,7 @@ class MeshRuntime:
             name: TRANSPORT_FACTORIES[name](self.dispatcher) for name in sorted(set(self.routes.values()))
         }
         self.transport: Transport = TransportRouter(self.transports, self.routes)
-        self.tools = ToolRegistry(registry)  # once per process, after every service module is imported (D42)
+        self.tools = ToolRegistry(registry)  # once per process, after every service module is imported
 
     def build_mesh(self, user_id: int) -> ServiceMesh:
         return ServiceMesh(user_id, self.registry, self.transport, self.cache, self.tools)
@@ -264,8 +245,7 @@ def _ttl(env: Mapping[str, str]) -> float:
 
 
 def _routes(env: Mapping[str, str], registry: ServiceRegistry) -> dict[str, str]:
-    """MESH_TRANSPORT for every registered service, then MESH_TRANSPORT_<SERVICE> as an override. An override that
-    names no service, or a transport outside TRANSPORTS, raises; nothing falls back silently (stories 26, 27)."""
+    """MESH_TRANSPORT for every service, then MESH_TRANSPORT_<SERVICE> as an override; a bad name or value raises."""
     default = _choice(env, "MESH_TRANSPORT", TRANSPORTS)
     routes = {name: default for name in registry.names()}
     by_variable = {ROUTE_PREFIX + name.upper(): name for name in registry.names()}
@@ -284,7 +264,7 @@ def build_runtime(
     registry: ServiceRegistry = DEFAULT_REGISTRY,
     session_factory: Callable[[], Session],
 ) -> MeshRuntime:
-    """The startup step (stories 48 to 52). Fails on an unknown name or a bad TTL; never falls back silently."""
+    """Fails on an unknown name or a bad TTL; never falls back silently."""
     env = os.environ if env is None else env
     routes = _routes(env, registry)
     _choice(env, "MESH_CACHE", CACHES)

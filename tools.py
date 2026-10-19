@@ -1,4 +1,4 @@
-"""The MCP tool surface (D21 to D26, D42): the decorator, the definition shapes, then the registry view."""
+"""The MCP tool surface: the decorator, the definition shapes, and the registry view."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ Send = Callable[[str, str, dict[str, Any]], Any]  # ServiceMesh.call, or a fake 
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """What @tool records on a method. The service name is the registry view's to add (D42)."""
+    """What @tool records on a method."""
 
     method: str
     title: str
@@ -33,10 +33,9 @@ class ToolSpec:
 
 
 def tool(*, title: str, read_only: bool, destructive: bool, idempotent: bool) -> Callable[[F], F]:
-    """Mark a service method as an MCP tool (D21). Every argument is required so that a tool line states all four
-    facts. Refuses at decoration, with TypeError: a name starting with '_', an empty title, a missing docstring,
-    read-only with destructive, read-only with not idempotent. Sets the P1 read-only attribute when read_only is
-    true (D24). Never wraps the method."""
+    """Mark a service method as an MCP tool. Refuses at decoration, with TypeError: a name starting with '_', an
+    empty title, a missing docstring, read-only with destructive, read-only with not idempotent. Sets the read-only
+    marker when read_only is true, so the cache flag and readOnlyHint are one flag."""
 
     def decorate(fn: F) -> F:
         name = fn.__name__
@@ -79,7 +78,7 @@ class ToolAnnotations(BaseModel):
 
 
 class ToolDefinition(BaseModel):
-    """One entry of the MCP tools/list result, dated 2026-07-28 (D22). Exactly these six fields."""
+    """One entry of the MCP tools/list result, per the specification dated 2026-07-28."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -115,7 +114,7 @@ class ToolList(BaseModel):
 
 
 class ToolRegistry:
-    """The view over a ServiceRegistry (D42): built once at startup, ordered by name, never changed afterwards."""
+    """A view over a ServiceRegistry: built once at startup, ordered by name, never changed afterwards."""
 
     def __init__(self, registry: ServiceRegistry) -> None:
         definitions: list[ToolDefinition] = []
@@ -145,16 +144,14 @@ class ToolRegistry:
         self.definitions: tuple[ToolDefinition, ...] = tuple(sorted(definitions, key=lambda d: d.name))
 
     def get(self, name: str) -> tuple[str, ToolSpec]:
-        """(service, spec) for a tool name, or UnknownTool. Raises because an unknown name is a caller's bug."""
+        """Raises because an unknown name is a caller's bug."""
         try:
             return self._specs[name]
         except KeyError:
             raise UnknownTool(f"unknown tool {name!r}") from None
 
     def call(self, name: str, arguments: dict[str, Any], send: Send) -> ToolResult:
-        """Validate, send, wrap (D25). ValidationError and MeshError are results with isError true; anything else
-        propagates (D35). The validated field values are what send receives, so a read builds the HTTP route's
-        cache key."""
+        """ValidationError and MeshError are results with isError true; anything else propagates."""
         service, spec = self.get(name)
         try:
             validated = spec.input_model.model_validate(arguments)

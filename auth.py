@@ -1,4 +1,4 @@
-"""Registration, login, and the inbound HTTP adapter's dependencies (D10 to D12, D38, D39, D43)."""
+"""Registration, login, and the HTTP dependencies that turn a bearer token into a user id."""
 
 import hashlib
 import os
@@ -43,7 +43,6 @@ def hash_token(token: str) -> str:
 
 
 def register(session: Session, data: schemas.UserCreate) -> schemas.User:
-    """Insert and commit. Conflict on a duplicate email, from the unique constraint."""
     row = User(name=data.name, email=data.email, password_hash=hash_password(data.password))
     session.add(row)
     try:
@@ -55,7 +54,7 @@ def register(session: Session, data: schemas.UserCreate) -> schemas.User:
 
 
 def login(session: Session, email: str, password: str) -> str:
-    """Verify, rotate the token, commit, return the raw token. NoUser(LOGIN_FAILED) on any failure."""
+    """Rotating the token on every login is the whole revocation story."""
     row = session.scalars(select(User).where(User.email == email)).one_or_none()
     if row is None or not verify_password(password, row.password_hash):
         raise NoUser(LOGIN_FAILED)
@@ -66,7 +65,6 @@ def login(session: Session, email: str, password: str) -> str:
 
 
 def authenticate(session: Session, token: str) -> int:
-    """The user id whose token_hash matches. NoUser(TOKEN_FAILED) when none does."""
     user_id = session.scalars(select(User.id).where(User.token_hash == hash_token(token))).one_or_none()
     if user_id is None:
         raise NoUser(TOKEN_FAILED)

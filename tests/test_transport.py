@@ -9,8 +9,8 @@ import schemas
 from errors import NotFound
 from mesh import ServiceMesh, build_runtime
 
-# The P6 stories that need the real services and a database. Every test but the routing one runs once per
-# transport through the runtime fixture; the routing test builds its own runtime with meetings on json.
+# Tests that need the real services and a database. Every test but the routing one runs once per transport through
+# the runtime fixture; the routing test builds its own runtime with meetings on json.
 
 JAN_15 = "2026-01-15T10:00:00Z"
 JAN_15_UTC = datetime(2026, 1, 15, 10, tzinfo=timezone.utc)

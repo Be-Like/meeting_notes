@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 
 import auth
 import schemas
-import services.meetings  # noqa: F401  importing the module registers "meetings" in DEFAULT_REGISTRY (D21)
-import services.notes  # noqa: F401  importing the module registers "notes" in DEFAULT_REGISTRY (D21)
-import services.tasks  # noqa: F401  importing the module registers "tasks" in DEFAULT_REGISTRY (D21)
-import services.users  # noqa: F401  importing the module registers "users" in DEFAULT_REGISTRY (D21)
+import services.meetings  # noqa: F401  importing the module registers "meetings" in DEFAULT_REGISTRY
+import services.notes  # noqa: F401  importing the module registers "notes" in DEFAULT_REGISTRY
+import services.tasks  # noqa: F401  importing the module registers "tasks" in DEFAULT_REGISTRY
+import services.users  # noqa: F401  importing the module registers "users" in DEFAULT_REGISTRY
 import tools
 from database import SessionLocal, create_tables, get_db
 from errors import Conflict, Invalid, MeshError, NotFound, NoUser, UnknownService, UnknownTool

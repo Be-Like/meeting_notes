@@ -1,5 +1,5 @@
-"""What a service author needs: the registry, the base class, the read-only marker, and the two models the mesh
-derives from a method's signature."""
+"""What a service author needs: the registry, the base class, the read-only marker, and the two models derived
+from a method's signature."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ READ_ONLY_ATTR = "__mesh_read_only__"
 
 
 def read_only(fn: F) -> F:
-    """Mark a service method as a read. Only marked methods are cached (D18). P5's @tool sets the same attribute."""
+    """Only marked methods are cached; @tool sets the same marker."""
     setattr(fn, READ_ONLY_ATTR, True)
     return fn
 
@@ -34,8 +34,8 @@ def is_read_only(fn: Callable) -> bool:
 
 @functools.cache
 def input_model(fn: Callable) -> type[BaseModel]:
-    """create_model over every parameter but self: (hint, default) from get_type_hints and the signature, extra
-    forbidden (D23). Memoised on the function, so the decorator and the dispatcher share one class per method."""
+    """Memoised on the function, so the decorator and the dispatcher share one class per method; extra arguments
+    are forbidden."""
     hints = typing.get_type_hints(fn)
     parameters = list(inspect.signature(fn).parameters.values())
     if parameters and parameters[0].name == "self":
@@ -48,7 +48,6 @@ def input_model(fn: Callable) -> type[BaseModel]:
 
 @functools.cache
 def output_model(fn: Callable) -> type[BaseModel]:
-    """create_model with one required field, result, typed as the return hint, or None when there is none."""
     hint = typing.get_type_hints(fn).get("return", type(None))
     if hint is None:
         hint = type(None)
@@ -99,4 +98,4 @@ class BaseService(ABC):
 
     @abstractmethod
     def scope(self, stmt: Select) -> Select:
-        """Restrict a select over this service's model to what self.user_id may see (D4, D39)."""
+        """Restrict a select over this service's model to what self.user_id may see."""

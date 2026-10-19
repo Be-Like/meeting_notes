@@ -141,8 +141,7 @@ class Clock:
 
 
 class MeshParts:
-    """The production wiring from build_runtime over REGISTRY and fake sessions, with the cache swapped for one on
-    a controllable clock and the transport wrapped so every send, near or far, is recorded."""
+    """The production wiring over REGISTRY and fake sessions, with a controllable clock and every send recorded."""
 
     def __init__(self, transport: str = "memory") -> None:
         self.clock = Clock()
