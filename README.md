@@ -175,7 +175,8 @@ python3.12 -m venv .venv
 ```
 
 The API is at `http://localhost:8000`, Swagger at `/docs`, ReDoc at `/redoc`. Startup creates the tables in
-`meetings.db` in the working directory.
+`meetings.db` in the working directory. `.venv/bin/python scripts/seed.py` fills an empty database with four
+users, five meetings, and some notes and tasks; it prints the logins, and `--reset` wipes the tables first.
 
 ## Configuration
 
@@ -215,17 +216,39 @@ Register, log in, and send the token as a bearer header. Registration and login 
 ```bash
 curl -s -X POST http://localhost:8000/users/ \
   -H "Content-Type: application/json" \
-  -d '{"name": "Ada", "email": "ada@example.com", "password": "correct horse"}'
+  -d '{"name": "Margaret", "email": "margaret@example.com", "password": "correct horse"}'
 
 curl -s -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "ada@example.com", "password": "correct horse"}'
+  -d '{"email": "margaret@example.com", "password": "correct horse"}'
 # {"access_token": "...", "token_type": "bearer"}
 
 export TOKEN=...   # the access_token above
 ```
 
 Logging in again issues a new token and the previous one stops working. Tokens do not expire.
+
+### Seeded users
+
+`scripts/seed.py` registers four users, all with the password `password123`. Tokens are only ever issued by
+login, so the seed stores none: log in as one of them to get one.
+
+| Email               | Name           | Attends                                                                       |
+|---------------------|----------------|-------------------------------------------------------------------------------|
+| `ada@example.com`   | Ada Lovelace   | Sprint planning, Ada and Grace one-on-one, Architecture review, Retrospective |
+| `grace@example.com` | Grace Hopper   | Every meeting                                                                 |
+| `alan@example.com`  | Alan Turing    | Sprint planning, Architecture review, Retrospective                           |
+| `linus@example.com` | Linus Torvalds | Kernel sync only                                                              |
+
+```bash
+curl -s -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ada@example.com", "password": "password123"}'
+```
+
+In Swagger, click Authorize and paste the `access_token` as the bearer value. The uneven attendance is what
+makes the visibility rule visible: Linus lists one meeting, Alan cannot read meeting 2, and Grace sees all five.
+The example requests below work as any seeded user, though meeting ids 1 to 5 are already taken.
 
 ## Example requests
 
